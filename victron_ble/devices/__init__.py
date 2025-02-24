@@ -1,20 +1,54 @@
+import struct
 from typing import Dict, Optional, Type
 
-from construct import Int8ul, Int16ul
-
-from devices.base import Device, DeviceData
-from devices.battery_monitor import AuxMode, BatteryMonitor
-from devices.battery_sense import BatterySense
-from devices.dc_energy_meter import DcEnergyMeter
-from devices.solar_charger import SolarCharger
+from victron_ble.devices.base import Device, DeviceData
+from victron_ble.devices.battery_monitor import (
+    AuxMode,
+    BatteryMonitor,
+    BatteryMonitorData,
+)
+from victron_ble.devices.battery_sense import BatterySense, BatterySenseData
+from victron_ble.devices.dc_energy_meter import DcEnergyMeter, DcEnergyMeterData
+from victron_ble.devices.dcdc_converter import DcDcConverter, DcDcConverterData
+from victron_ble.devices.inverter import Inverter, InverterData
+from victron_ble.devices.lynx_smart_bms import LynxSmartBMS, LynxSmartBMSData
+from victron_ble.devices.orion_xs import OrionXS, OrionXSData
+from victron_ble.devices.smart_battery_protect import (
+    SmartBatteryProtect,
+    SmartBatteryProtectData,
+)
+from victron_ble.devices.smart_lithium import SmartLithium, SmartLithiumData
+from victron_ble.devices.solar_charger import SolarCharger, SolarChargerData
+from victron_ble.devices.vebus import VEBus, VEBusData
 
 __all__ = [
     "AuxMode",
     "Device",
     "DeviceData",
     "BatteryMonitor",
+    "BatteryMonitorData",
+    "BatterySense",
+    "BatterySenseData",
+    "DcDcConverter",
+    "DcDcConverterData",
     "DcEnergyMeter",
+    "DcEnergyMeterData",
+    "Inverter",
+    "InverterData",
+    "OrionXS",
+    "OrionXSData",
+    "SmartBatteryProtect",
+    "SmartBatteryProtectData",
+    "SmartLithium",
+    "SmartLithiumData",
+    "SmartBatteryProtect",
+    "SmartBatteryProtectData",
+    "LynxSmartBMS",
+    "LynxSmartBMSData",
     "SolarCharger",
+    "SolarChargerData",
+    "VEBus",
+    "VEBusData",
 ]
 
 # Add to this list if a device should be forced to use a particular implementation
@@ -26,8 +60,11 @@ MODEL_PARSER_OVERRIDE: Dict[int, Type[Device]] = {
 
 
 def detect_device_type(data: bytes) -> Optional[Type[Device]]:
-    model_id = Int16ul.parse(data[2:4])
-    mode = Int8ul.parse(data[4:5])
+    try:
+        model_id = struct.unpack("<H", data[2:4])[0]
+        mode = struct.unpack("<B", data[4:5])[0]
+    except IndexError:
+        return None
 
     # Model ID-based preferences
     match = MODEL_PARSER_OVERRIDE.get(model_id)
@@ -42,20 +79,26 @@ def detect_device_type(data: bytes) -> Optional[Type[Device]]:
     elif mode == 0x8:  # AcCharger
         pass
     elif mode == 0x4:  # DcDcConverter
-        pass
+        return DcDcConverter
     elif mode == 0x3:  # Inverter
-        pass
+        return Inverter
     elif mode == 0x6:  # InverterRS
         pass
     elif mode == 0xA:  # LynxSmartBMS
-        pass
+        return LynxSmartBMS
     elif mode == 0xB:  # MultiRS
         pass
-    elif mode == 0x5:  # SmartLithium
-        pass
+    elif (
+        mode == 0x5
+    ):  # SmartLithium (commercially Lithium Battery Smart / LiFePO4 Battery Smart)
+        return SmartLithium
+    elif mode == 0x9:  # SmartBatteryProtect
+        return SmartBatteryProtect
     elif mode == 0x1:  # SolarCharger
         return SolarCharger
     elif mode == 0xC:  # VE.Bus
-        pass
+        return VEBus
+    elif mode == 0xF:  # Orion XS
+        return OrionXS
 
     return None

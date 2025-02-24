@@ -1,18 +1,13 @@
 from enum import Enum
-from typing import Optional
+from typing import Optional, Type
 
-from construct import (
-    BitStruct,
-    Flag,
-    GreedyBytes,
-    Int8sl,
-    Int16sl,
-    Int16ul,
-    Int24sl,
-    Struct,
+from victron_ble.devices.base import (
+    AlarmReason,
+    BitReader,
+    Device,
+    DeviceData,
+    kelvin_to_celsius,
 )
-
-from devices.base import Device, DeviceData, kelvin_to_celsius
 
 
 class AuxMode(Enum):
@@ -53,53 +48,11 @@ class BatteryMonitorData(DeviceData):
         """
         return self._data["consumed_ah"]
 
-    def get_low_voltage_alarm(self) -> bool:
+    def get_alarm(self) -> AlarmReason:
         """
-        Return a boolean indicating if the low voltage alarm is active
+        Return an enum indicating the current alarm reason
         """
-        return self._data["alarm"]["low_voltage"]
-
-    def get_high_voltage_alarm(self) -> bool:
-        """
-        Return a boolean indicating if the high voltage alarm is active
-        """
-        return self._data["alarm"]["high_voltage"]
-
-    def get_low_soc_alarm(self) -> bool:
-        """
-        Return a boolean indicating if the low state of charge alarm is active
-        """
-        return self._data["alarm"]["low_soc"]
-
-    def get_low_starter_battery_voltage_alarm(self) -> bool:
-        """
-        Return a boolean indicating if the low starter battery voltage alarm is active
-        """
-        return self._data["alarm"]["low_starter_voltage"]
-
-    def get_high_starter_battery_voltage_alarm(self) -> bool:
-        """
-        Return a boolean indicating if the high starter battery voltage alarm is active
-        """
-        return self._data["alarm"]["high_starter_voltage"]
-
-    def get_low_temperature_alarm(self) -> bool:
-        """
-        Return a boolean indicating if the low temperature alarm is active
-        """
-        return self._data["alarm"]["low_temperature"]
-
-    def get_high_temperature_alarm(self) -> bool:
-        """
-        Return a boolean indicating if the high temperature alarm is active
-        """
-        return self._data["alarm"]["high_temperature"]
-
-    def get_midpoint_deviation_alarm(self) -> bool:
-        """
-        Return a boolean indicating if the high temperature alarm is active
-        """
-        return self._data["alarm"]["mid_deviation"]
+        return self._data["alarm"]
 
     def get_aux_mode(self) -> AuxMode:
         """
@@ -130,88 +83,43 @@ class BatteryMonitorData(DeviceData):
 
 
 class BatteryMonitor(Device):
+    data_type: Type[DeviceData] = BatteryMonitorData
 
-    PACKET = Struct(
+    def parse_decrypted(self, decrypted: bytes) -> dict:
+        reader = BitReader(decrypted)
+
         # Remaining time in minutes
-        "remaining_mins" / Int16ul,
+        remaining_mins = reader.read_unsigned_int(16)
         # Voltage reading in 10mV increments
-        "voltage" / Int16ul,
-        # Bit map of alarm status
-        # 0b00000001 = low voltage alarm
-        # 0b00000010 = high voltage alarm
-        # 0b00000100 = low soc alarm
-        # 0b00001000 = low starter alarm
-        # 0b00001001 = low voltage + low starter alarm
-        # 0b00011001 = high starter + low voltage + low starter alarm
-        # 0b00010000 = high starter alarm
-        # 0b00100000 = low temp alarm
-        # 0b01000000 = high temp alarm
-        # 0b10000000 = midpoint voltage deviation alarm
-        "alarm"
-        / BitStruct(
-            "mid_deviation" / Flag,
-            "high_temperature" / Flag,
-            "low_temperature" / Flag,
-            "high_starter_voltage" / Flag,
-            "low_starter_voltage" / Flag,
-            "low_soc" / Flag,
-            "high_voltage" / Flag,
-            "low_voltage" / Flag,
-        ),
-        # Unknown byte
-        "uk_1b" / Int8sl,
+        voltage = reader.read_signed_int(16)
+        # Alarm reason
+        alarm = reader.read_unsigned_int(16)
         # Value of the auxillary input (millivolts or degrees)
-        "aux" / Int16ul,
-        # The upper 22 bits indicate the current in milliamps
-        # The lower 2 bits identify the aux input mode:
-        #   0 = Starter battery voltage
-        #   1 = Midpoint voltage
-        #   2 = Temperature
-        #   3 = Disabled
-        "current" / Int24sl,
+        aux = reader.read_unsigned_int(16)
+        aux_mode = reader.read_unsigned_int(2)
+        # The current in milliamps
+        current = reader.read_signed_int(22)
         # Consumed Ah in 0.1Ah increments
-        "consumed_ah" / Int16ul,
-        # The lowest 4 bits are unknown
-        # The next 8 bits indicate the state of charge in 0.1% increments
-        # The upper 2 bits are unknown
-        "soc" / Int16ul,
-        # Throw away any extra bytes
-        GreedyBytes,
-    )
-
-    def parse(self, data: bytes) -> BatteryMonitorData:
-        decrypted = self.decrypt(data)
-        pkt = self.PACKET.parse(decrypted)
-
-        aux_mode = AuxMode(pkt.current & 0b11)
+        consumed_ah = reader.read_unsigned_int(20)
+        # The state of charge in 0.1% increments
+        soc = reader.read_unsigned_int(10)
 
         parsed = {
-            "remaining_mins": pkt.remaining_mins,
-            "aux_mode": aux_mode,
-            "current": (pkt.current >> 2) / 1000,
-            "voltage": pkt.voltage / 100,
-            "consumed_ah": pkt.consumed_ah / 10,
-            "soc": ((pkt.soc & 0x3FFF) >> 4) / 10,
-            "alarm": {
-                "low_voltage": pkt.alarm.low_voltage,
-                "high_voltage": pkt.alarm.high_voltage,
-                "low_soc": pkt.alarm.low_soc,
-                "low_starter_voltage": pkt.alarm.low_starter_voltage,
-                "high_starter_voltage": pkt.alarm.high_starter_voltage,
-                "low_temperature": pkt.alarm.low_temperature,
-                "high_temperature": pkt.alarm.high_temperature,
-                "mid_deviation": pkt.alarm.mid_deviation,
-            },
+            "remaining_mins": remaining_mins if remaining_mins != 0xFFFF else None,
+            "voltage": voltage / 100 if voltage != 0x7FFF else None,
+            "alarm": AlarmReason(alarm),
+            "aux_mode": AuxMode(aux_mode),
+            "current": current / 1000 if current != 0x3FFFFF else None,
+            "consumed_ah": -consumed_ah / 10 if consumed_ah != 0xFFFFF else None,
+            "soc": soc / 10 if soc != 0x3FF else None,
         }
 
-        if aux_mode == AuxMode.STARTER_VOLTAGE:
+        if aux_mode == AuxMode.STARTER_VOLTAGE.value:
             # Starter voltage is treated as signed
-            parsed["starter_voltage"] = (
-                Int16sl.parse((pkt.aux).to_bytes(2, "little")) / 100
-            )
-        elif aux_mode == AuxMode.MIDPOINT_VOLTAGE:
-            parsed["midpoint_voltage"] = pkt.aux / 100
-        elif aux_mode == AuxMode.TEMPERATURE:
-            parsed["temperature_kelvin"] = pkt.aux / 100
+            parsed["starter_voltage"] = BitReader.to_signed_int(aux, 16) / 100
+        elif aux_mode == AuxMode.MIDPOINT_VOLTAGE.value:
+            parsed["midpoint_voltage"] = aux / 100
+        elif aux_mode == AuxMode.TEMPERATURE.value:
+            parsed["temperature_kelvin"] = aux / 100
 
-        return BatteryMonitorData(self.get_model_id(data), parsed)
+        return parsed
