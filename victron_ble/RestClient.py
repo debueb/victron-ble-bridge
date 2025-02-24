@@ -39,6 +39,11 @@ class RestClient:
         self.add(blob, device, "solar_power")
         self.add(blob, device, "yield_today")
 
+        # DCDC
+        self.add(blob, device, "device_state")
+        self.add(blob, device, "input_voltage")
+        self.add(blob, device, "output_voltage")
+
         if "voltage" in device._data and "current" in device._data:
             blob["data"]["power"] = round(device._data["voltage"]*device._data["current"])
 
